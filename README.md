@@ -150,6 +150,16 @@ Trong phiên bản này, firmware **tích hợp sẵn 8 loại âm thanh động
 └──────────────────────────┘     └────────────────────────────────┘
 ```
 
+### Kiến trúc File (Modular)
+
+Mã nguồn dự án được chia thành các module chức năng riêng biệt để dễ bảo trì và mở rộng:
+
+- **`config.h`**: Lưu trữ toàn bộ các hằng số cài đặt như cấu hình phần cứng (Pin), thông số xử lý biến trở (ADC), cấu hình RPM, và Volume.
+- **`audio_engine.h / .cpp`**: "Trái tim" của hệ thống âm thanh. Quản lý bộ đệm vòng (Ring Buffer), ngắt Timer ở tần số cao (`onTimerISR`), điều khiển thao tác thanh ghi (DAC registers), trộn âm (Crossfade), và vòng lặp `fillAudioBuffer()`.
+- **`ble_manager.h / .cpp`**: Xử lý toàn bộ logic liên quan đến kết nối Bluetooth Low Energy (BLE Server), phân tích cú pháp lệnh (Command parsing), và trả log phản hồi qua điện thoại.
+- **`sound_registry.h`**: Bảng điều phối lưu trữ địa chỉ và cấu trúc của 8 file dữ liệu âm thanh (PCM samples).
+- **`main.cpp`**: Rất gọn nhẹ, chỉ chịu trách nhiệm đọc tín hiệu tay ga (ADC throttle) và quản lý Máy trạng thái (State Machine) của động cơ (`ENG_OFF` -> `ENG_STARTING` -> `ENG_RUNNING`).
+
 1. `fillAudioBuffer()`: Hàm này tính toán Pitch Shift và Crossfade (bằng cách lấy dữ liệu từ Flash), sau đó điền vào mảng đệm (RAM). Nó được thực thi ở Core 1.
 2. `onTimerISR()`: Hàm ngắt được kích hoạt mỗi 45 micro-giây (22050Hz). Do BLE thường xuyên khóa Cache (Cache Disabled), hàm này không được phép đọc Flash, mà chỉ rút dữ liệu đã được tính sẵn trong mảng đệm trên RAM ra loa.
 
