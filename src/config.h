@@ -6,9 +6,10 @@
 
 // ─── CAU HINH PHAN CUNG ──────────────────────────────────────────────────────
 
-#define POT_PIN 34   // GPIO34 — ADC1_CH6
-#define DAC_PIN_L 25 // GPIO25 — DAC Channel 1 (Left)
-#define DAC_PIN_R 26 // GPIO26 — DAC Channel 2 (Right)
+#define POT_PIN 34  // GPIO34 — ADC1_CH6
+#define I2S_BCLK 25 // Bit Clock
+#define I2S_LRC 26  // Left/Right Clock (Word Select)
+#define I2S_DOUT 33 // Data Out
 
 // ─── CAU HINH ADC ────────────────────────────────────────────────────────────
 
@@ -20,7 +21,8 @@
 // ─── CAU HINH RPM ────────────────────────────────────────────────────────────
 
 #define RPM_IDLE 800.0f // RPM cam chung
-#define RPM_MAX 4500.0f // RPM toi da (tuong duong MAX_RPM_PERCENTAGE=300 cua repo)
+#define RPM_MAX                                                                \
+  4500.0f // RPM toi da (tuong duong MAX_RPM_PERCENTAGE=300 cua repo)
 #define RPM_ACCEL 12.0f // buoc tang RPM / chu ky 10ms (acc=2 -> doi sang ~12)
 #define RPM_DECEL 12.0f // buoc giam RPM / chu ky 10ms (dec=1 -> doi sang ~6)
 
