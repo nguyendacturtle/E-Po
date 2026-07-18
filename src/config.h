@@ -4,6 +4,11 @@
 // ─── CHON VEHICLE (Runtime) ──────────────────────────────────────────────────
 // Number of sound profiles is defined in sound_registry.h
 
+// ─── CAU HINH GPS ATGM336H ───────────────────────────────────────────────────
+#define GPS_RX_PIN 16
+#define GPS_TX_PIN 17
+#define MAX_SPEED_KMH 60.0f
+
 // ─── CAU HINH PHAN CUNG ──────────────────────────────────────────────────────
 
 #define POT_PIN 34  // GPIO34 — ADC1_CH6

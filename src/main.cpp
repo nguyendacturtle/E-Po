@@ -1,12 +1,12 @@
 /**
  * =============================================================================
- * E_PO_test_sound — Chế độ BMI160-Only (Biến trở DISABLED)
+ * E_PO_test_sound — Chế độ Hybrid (IMU 100Hz + GPS 5Hz)
  * =============================================================================
  * Động cơ tự khởi động ngay khi bật nguồn.
- * Tín hiệu ga hoàn toàn dựa vào gia tốc BMI160:
- *   - Tăng tốc → âm thanh tăng ga
- *   - Giảm tốc → âm thanh giảm ga
- *   - Đi đều   → âm thanh idle nhẹ nhàng suy giảm dần
+ * Tín hiệu ga được phối hợp thông minh:
+ *   - Khi dừng xe (GPS = 0 km/h) -> Ga ảo khoá ở 0% (Idle 800 RPM) triệt tiêu trôi IMU.
+ *   - Khi di chuyển -> IMU phản hồi tức thì (100Hz) để tăng/giảm ga ảo (VThrottle).
+ *   - Vòng tua nền (Base RPM) được nâng lên tương ứng với tốc độ thực tế từ GPS.
  */
 
 #include <Arduino.h>
@@ -16,6 +16,7 @@
 #include "audio_engine.h"
 #include "ble_manager.h"
 #include "bmi160_sensor.h"
+#include "gps_manager.h"
 
 // ─── ENUM TRẠNG THÁI ĐỘNG CƠ ────────────────────────────────────────────────
 enum EngineState : uint8_t {
@@ -35,7 +36,7 @@ static float s_currentRPM = 0.0f;
 static float s_targetRPM  = RPM_IDLE;
 static EngineState s_state = ENG_OFF;
 
-// Dữ liệu BMI160 (cập nhật mỗi 10ms)
+// Dữ liệu cảm biến
 static BMI160_Data bmiData = {};
 
 // Virtual Throttle: tín hiệu ga ảo điều khiển bởi BMI160
@@ -51,15 +52,17 @@ void setup() {
   delay(1000);
 
   Serial.println("\n=================================================");
-  Serial.println(" E_PO Engine Sound — BMI160-Only Mode");
+  Serial.println(" E_PO Engine Sound — Hybrid IMU + GPS Mode");
   Serial.printf(" Loaded %d sound profiles.\n", SOUND_PROFILE_COUNT);
   Serial.printf(" RPM range     : %.0f – %.0f RPM\n", RPM_IDLE, RPM_MAX);
-  Serial.println(" [!] Bien tro DISABLED. Dieu khien bang BMI160.");
   Serial.println("=================================================\n");
 
   if (!BMI160_init()) {
     Serial.println("[CRITICAL] Khoi tao BMI160 that bai!");
   }
+
+  // Khởi tạo GPS ở tần số 5Hz
+  GPS_init();
 
   AudioEngine_init();
 
@@ -81,6 +84,9 @@ void loop() {
 
   AudioEngine_fillBuffer();
 
+  // Đọc serial GPS liên tục (cực kỳ quan trọng để tránh đầy buffer UART)
+  GPS_update();
+
   // 1. Đọc & xử lý BMI160 định kỳ mỗi 10ms
   if (millis() - lastBmiMs >= 10) {
     lastBmiMs = millis();
@@ -94,21 +100,24 @@ void loop() {
     }
     */
 
-    // ═══ CẬP NHẬT VIRTUAL THROTTLE TỪ BMI160 ═══
-    // Tăng tốc  → tăng ga dần dần
-    // Giảm tốc  → giảm ga nhanh
-    // Đi đều    → suy giảm tự nhiên về idle
+    // ═══ CẬP NHẬT VIRTUAL THROTTLE PHỐI HỢP CẢ IMU VÀ GPS ═══
     if (s_state == ENG_RUNNING) {
-      switch (bmiData.trang_thai_toc) {
-        case TOC_DO_TANG_TOC:
-          s_virtualThrottle += VTHROTTLE_RAMP_UP;
-          break;
-        case TOC_DO_GIAM_TOC:
-          s_virtualThrottle -= VTHROTTLE_RAMP_DOWN;
-          break;
-        default: // TOC_DO_DEU_GA
-          s_virtualThrottle -= VTHROTTLE_DECAY;
-          break;
+      if (gpsData.valid && gpsData.speed_kmh == 0.0f) {
+        // Xe dừng hẳn -> Khóa chặt ga ảo về 0 để triệt tiêu trôi tĩnh từ IMU
+        s_virtualThrottle = 0.0f;
+      } else {
+        // Xe đang di chuyển -> Tăng/giảm ga dựa trên gia tốc động học IMU
+        switch (bmiData.trang_thai_toc) {
+          case TOC_DO_TANG_TOC:
+            s_virtualThrottle += VTHROTTLE_RAMP_UP;
+            break;
+          case TOC_DO_GIAM_TOC:
+            s_virtualThrottle -= VTHROTTLE_RAMP_DOWN;
+            break;
+          default: // TOC_DO_DEU_GA
+            s_virtualThrottle -= VTHROTTLE_DECAY;
+            break;
+        }
       }
       // Clamp 0.0 ~ 1.0
       if (s_virtualThrottle > 1.0f) s_virtualThrottle = 1.0f;
@@ -136,14 +145,14 @@ void loop() {
   // 3. Xử lý BLE
   BLEManager_process();
 
-  // 4. State Machine Âm thanh động cơ (Dùng virtualThrottle thay cho biến trở)
+  // 4. State Machine Âm thanh động cơ (Dùng virtualThrottle phối hợp GPS)
   float total_throttle = s_virtualThrottle;
 
   switch (s_state) {
     case ENG_OFF:
       AudioEngine_turnOff();
-      // Tự khởi động lại (Bỏ qua check té ngã)
-      {
+      // Tự khởi động lại
+      if (!bmiData.dang_bi_te_nga) {
         s_currentRPM = 0.0f;
         s_virtualThrottle = 0.0f;
         AudioEngine_playStart();
@@ -157,12 +166,20 @@ void loop() {
         s_targetRPM = RPM_IDLE;
         AudioEngine_update(s_currentRPM, 0.0f);
         s_state = ENG_RUNNING;
-        Serial.println("[ENGINE] Running! (BMI160-Only mode)");
+        Serial.println("[ENGINE] Running! (Hybrid GPS + IMU mode)");
       }
       break;
 
     case ENG_RUNNING:
-      s_targetRPM = RPM_IDLE + total_throttle * (RPM_MAX - RPM_IDLE);
+      // Tính vòng tua nền theo tốc độ thực tế của GPS (Base RPM)
+      float gpsMinRPM = RPM_IDLE;
+      if (gpsData.valid) {
+        gpsMinRPM = RPM_IDLE + (gpsData.speed_kmh / MAX_SPEED_KMH) * (RPM_MAX - RPM_IDLE);
+        if (gpsMinRPM > RPM_MAX) gpsMinRPM = RPM_MAX;
+      }
+
+      // Vòng tua mục tiêu = RPM nền từ GPS + Tỷ lệ ga từ IMU
+      s_targetRPM = gpsMinRPM + total_throttle * (RPM_MAX - gpsMinRPM);
 
       if (s_currentRPM < s_targetRPM) {
         float accel = RPM_ACCEL * (1.0f + total_throttle * 1.5f);
@@ -183,11 +200,16 @@ void loop() {
     const char *st = (s_state == ENG_OFF) ? "OFF" :
                      (s_state == ENG_STARTING) ? "STARTING" : "RUNNING";
 
-    // In dữ liệu BMI160
+    // In dữ liệu IMU
     BMI160_printLog(&bmiData);
 
+    // In dữ liệu GPS
+    char gpsLog[256];
+    GPS_printLog(gpsLog, sizeof(gpsLog));
+    Serial.print(gpsLog);
+
     // In trạng thái Engine
-    char logBuf[160];
+    char logBuf[256];
     snprintf(logBuf, sizeof(logBuf),
              "[%s] RPM: %5.0f | vTHR: %5.1f%% | MOT: %s | VOL: %3d | RevMix: %3d\n\n",
              st, s_currentRPM, total_throttle * 100.0f,
@@ -195,7 +217,11 @@ void loop() {
              (unsigned)AudioEngine_getMasterVol(), (unsigned)AudioEngine_getRevMix());
 
     Serial.print(logBuf);
-    BLEManager_notifyLog(logBuf);
+    
+    // Gửi gộp cả log GPS và Engine qua BLE
+    char bleLogBuf[512];
+    snprintf(bleLogBuf, sizeof(bleLogBuf), "%s%s", gpsLog, logBuf);
+    BLEManager_notifyLog(bleLogBuf);
   }
 
   delay(2);
